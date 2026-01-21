@@ -1,0 +1,15 @@
+# n8n data files
+n8n_data/
+
+# Environment files with secrets
+.env
+
+# OS files
+.DS_Store
+
+# Editor files
+*.swp
+*.swo
+
+# Logs
+*.log
