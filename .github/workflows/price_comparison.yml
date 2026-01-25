@@ -1,0 +1,35 @@
+name: 価格比較 - 6時間ごと実行
+
+on:
+  schedule:
+    # 6時間ごとに実行（UTC: 0, 6, 12, 18時 = 日本時間: 9, 15, 21, 3時）
+    - cron: '0 0,6,12,18 * * *'
+  workflow_dispatch:  # 手動実行も可能
+
+jobs:
+  price-comparison:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 依存関係インストール
+        run: |
+          pip install requests gspread google-auth
+
+      - name: 価格比較スクリプト実行
+        env:
+          RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          SEARCH_KEYWORD: 'iPhone 15'
+          PRICE_THRESHOLD: '2000'
+          MIN_PRICE: '50000'
+        run: |
+          python price_comparison.py

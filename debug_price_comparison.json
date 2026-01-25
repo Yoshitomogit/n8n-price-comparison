@@ -1,0 +1,310 @@
+{
+    "name": "【デバッグ用】楽天市場 vs Amazon 価格比較 (全件出力)",
+    "nodes": [
+        {
+            "parameters": {
+                "rule": {
+                    "interval": [
+                        {
+                            "field": "hours",
+                            "hoursInterval": 6
+                        }
+                    ]
+                }
+            },
+            "id": "schedule-trigger",
+            "name": "⏰ 定期実行 (6時間毎)",
+            "type": "n8n-nodes-base.scheduleTrigger",
+            "typeVersion": 1.2,
+            "position": [
+                0,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "assignments": {
+                    "assignments": [
+                        {
+                            "id": "keyword",
+                            "name": "keyword",
+                            "value": "iPhone 15",
+                            "type": "string"
+                        },
+                        {
+                            "id": "applicationId",
+                            "name": "applicationId",
+                            "value": "1004649499121188262",
+                            "type": "string"
+                        }
+                    ]
+                }
+            },
+            "id": "set-params",
+            "name": "🔧 検索パラメータ設定",
+            "type": "n8n-nodes-base.set",
+            "typeVersion": 3.4,
+            "position": [
+                220,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "method": "GET",
+                "url": "https://app.rakuten.co.jp/services/api/IchibaItem/Search/20220601",
+                "sendQuery": true,
+                "queryParameters": {
+                    "parameters": [
+                        {
+                            "name": "applicationId",
+                            "value": "={{ $json.applicationId }}"
+                        },
+                        {
+                            "name": "keyword",
+                            "value": "={{ $json.keyword }}"
+                        },
+                        {
+                            "name": "hits",
+                            "value": "30"
+                        }
+                    ]
+                },
+                "options": {}
+            },
+            "id": "rakuten-api",
+            "name": "🛒 楽天市場API",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                440,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "jsCode": "// 楽天APIレスポンスから商品データを抽出（アクセサリー除外）\nconst items = $input.first().json.Items || [];\n\n// 除外キーワード（アクセサリー類）\nconst excludeKeywords = [\n  'ケース', 'カバー', 'フィルム', 'ガラス', 'シート',\n  'ストラップ', 'ホルダー', 'スタンド', 'ポーチ', 'バンド',\n  'シール', 'ステッカー', 'リング', 'グリップ', 'アクセサリー',\n  'クロス', 'シンプル', 'レジン', 'デコ', 'ELECOM', 'エレコム',\n  '充電器', 'ケーブル', 'イヤホン', 'クリーナー', '100円'\n];\n\n// 最低価格（本体価格帯を想定：5万円以上）\nconst minPrice = 50000;\n\nconst filtered = items.filter(item => {\n  const name = item.Item.itemName;\n  const price = item.Item.itemPrice;\n  \n  // アクセサリーキーワードを含む商品を除外\n  const isAccessory = excludeKeywords.some(kw => name.includes(kw));\n  \n  // 価格が安すぎる商品を除外（本体価格帯のみ）\n  const isPriceReasonable = price >= minPrice;\n  \n  return !isAccessory && isPriceReasonable;\n});\n\nreturn filtered.map(item => {\n  const i = item.Item;\n  return {\n    json: {\n      source: '楽天市場',\n      name: i.itemName,\n      price: i.itemPrice,\n      url: i.itemUrl,\n      shop: i.shopName,\n      availability: i.availability === 1 ? '在庫あり' : '在庫なし'\n    }\n  };\n});"
+            },
+            "id": "parse-rakuten",
+            "name": "📦 楽天データ整形",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                660,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "method": "GET",
+                "url": "https://www.recommerce.co.jp/expensive/search_result.php",
+                "authentication": "none",
+                "sendQuery": true,
+                "queryParameters": {
+                    "parameters": [
+                        {
+                            "name": "word",
+                            "value": "={{ $json.keyword }}"
+                        },
+                        {
+                            "name": "category_selection",
+                            "value": ""
+                        }
+                    ]
+                },
+                "options": {
+                    "responseFormat": "string",
+                    "headerParameters": {
+                        "parameters": [
+                            {
+                                "name": "User-Agent",
+                                "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                            }
+                        ]
+                    }
+                }
+            },
+            "id": "recommerce-http",
+            "name": "🕷️ Amazon ReCommerce取得",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                440,
+                220
+            ]
+        },
+        {
+            "parameters": {
+                "operation": "extractHtmlContent",
+                "dataPropertyName": "data",
+                "extractionValues": {
+                    "values": [
+                        {
+                            "key": "name",
+                            "cssSelector": "td.li_title",
+                            "returnArray": true
+                        },
+                        {
+                            "key": "price_range",
+                            "cssSelector": "td.li_price",
+                            "returnArray": true
+                        }
+                    ]
+                },
+                "options": {
+                    "trimValues": true
+                }
+            },
+            "id": "extract-html",
+            "name": "📄 HTML抽出",
+            "type": "n8n-nodes-base.htmlExtract",
+            "typeVersion": 1,
+            "position": [
+                600,
+                220
+            ]
+        },
+        {
+            "parameters": {
+                "jsCode": "// ReCommerceデータを整形\nconst items = $input.all();\nconst products = [];\n\n// HTML Extractの結果は配列の配列になっている可能性があるため展開\nconst names = items[0].json.name || [];\nconst priceRanges = items[0].json.price_range || [];\n\nfor (let i = 0; i < names.length; i++) {\n  const name = names[i];\n  const priceRange = priceRanges[i];\n  \n  if (!name || (!name.includes('iPhone') && !name.includes('Pixel'))) continue;\n  \n  // 価格抽出: \"買取価格：44,625円～89,250円\" -> 89250\n  const parsePrice = (str) => {\n    if (!str) return { min: 0, max: 0 };\n    const clean = str.replace('買取価格：', '');\n    const parts = clean.split('～');\n    const min = parseInt(parts[0].replace(/[^0-9]/g, ''), 10) || 0;\n    const max = parts[1] ? parseInt(parts[1].replace(/[^0-9]/g, ''), 10) : min;\n    return { min, max };\n  };\n  \n  const { min, max } = parsePrice(priceRange);\n  \n  // 上限買取価格を採用\n  if (max >= 10000) {\n    products.push({\n      json: {\n        source: 'Amazon ReCommerce',\n        name: name,\n        price: max,\n        price_min: min,\n        url: 'https://www.recommerce.co.jp/',\n        shop: 'Amazon ReCommerce',\n        condition: 'HP上限価格'\n      }\n    });\n  }\n}\n\nreturn products.length > 0 ? products : [{ json: { message: 'Amazon ReCommerceの商品が見つかりませんでした' } }];"
+            },
+            "id": "format-recommerce-data",
+            "name": "📦 ReCommerceデータ整形",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                760,
+                220
+            ]
+        },
+        {
+            "parameters": {
+                "mode": "append"
+            },
+            "id": "merge-data",
+            "name": "🔄 データ統合",
+            "type": "n8n-nodes-base.merge",
+            "typeVersion": 3,
+            "position": [
+                880,
+                100
+            ]
+        },
+        {
+            "parameters": {
+                "jsCode": "// 価格比較ロジック（デバッグ用：全件出力）\nconst items = $input.all();\nconst results = [];\nconst threshold = -1000000; // 閾値をマイナスにして全件通す\n\n// 楽天とAmazon ReCommerceのデータを分類\nconst rakutenItems = items.filter(i => i.json.source === '楽天市場');\nconst amazonItems = items.filter(i => i.json.source === 'Amazon ReCommerce');\n\nconsole.log('楽天商品数:', rakutenItems.length);\nconsole.log('Amazon商品数:', amazonItems.length);\n\n// スペック抽出関数\nfunction extractSpecs(name) {\n  const specs = {\n    model: '',\n    storage: '',\n    condition: ''\n  };\n  \n  // モデル判定\n  if (name.includes('Pro Max') || name.includes('ProMax')) {\n    specs.model = 'iPhone 15 Pro Max';\n  } else if (name.includes('Pro')) {\n    specs.model = 'iPhone 15 Pro';\n  } else if (name.includes('15') && !name.includes('Plus')) {\n    specs.model = 'iPhone 15';\n  } else if (name.includes('Plus')) {\n    specs.model = 'iPhone 15 Plus';\n  }\n  \n  // ストレージ判定\n  if (name.includes('512GB') || name.includes('512gb')) {\n    specs.storage = '512GB';\n  } else if (name.includes('256GB') || name.includes('256gb')) {\n    specs.storage = '256GB';\n  } else if (name.includes('128GB') || name.includes('128gb')) {\n    specs.storage = '128GB';\n  } else if (name.includes('1TB') || name.includes('1tb')) {\n    specs.storage = '1TB';\n  }\n  \n  return specs;\n}\n\n// スペック比較\nfor (const amazon of amazonItems) {\n  const amzSpecs = extractSpecs(amazon.json.name);\n  \n  // デバッグ用: 抽出されたスペックを出力\n  // console.log(`Amazon: ${amazon.json.name} -> ${JSON.stringify(amzSpecs)}`);\n\n  // スペックが抽出できない場合はスキップ\n  if (!amzSpecs.model || !amzSpecs.storage) continue;\n  \n  for (const rakuten of rakutenItems) {\n    const rakutenSpecs = extractSpecs(rakuten.json.name);\n    \n    // 同一スペック（モデル・容量）のみ比較\n    if (amzSpecs.model === rakutenSpecs.model && \n        amzSpecs.storage === rakutenSpecs.storage) {\n      \n      // 利益計算 = Amazon買取価格 - 楽天販売価格\n      const profit = amazon.json.price - rakuten.json.price;\n      \n      // 全件追加\n      results.push({\n        json: {\n          比較日時: new Date().toISOString(),\n          モデル: amzSpecs.model,\n          容量: amzSpecs.storage,\n          商品名_Amazon: amazon.json.name,\n          商品名_楽天: rakuten.json.name,\n          買取価格_Amazon: amazon.json.price,\n          販売価格_楽天: rakuten.json.price,\n          想定差益: profit,\n          判定: profit > 0 ? '利益あり' : '利益なし',\n          URL_Amazon: amazon.json.url,\n          URL_楽天: rakuten.json.url\n        }\n      });\n    }\n  }\n}\n\n// 結果がない場合のメッセージ\nif (results.length === 0) {\n  return [{\n    json: {\n      message: '同一スペックの商品が見つかりませんでした (マッチング失敗)',\n      debug_楽天件数: rakutenItems.length,\n      debug_Amazon件数: amazonItems.length\n    }\n  }];\n}\n\nreturn results;"
+            },
+            "id": "compare-prices-debug",
+            "name": "📊 価格比較 (全件)",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                1100,
+                100
+            ]
+        }
+    ],
+    "connections": {
+        "⏰ 定期実行 (6時間毎)": {
+            "main": [
+                [
+                    {
+                        "node": "🔧 検索パラメータ設定",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "🔧 検索パラメータ設定": {
+            "main": [
+                [
+                    {
+                        "node": "🛒 楽天市場API",
+                        "type": "main",
+                        "index": 0
+                    },
+                    {
+                        "node": "🕷️ Amazon ReCommerce取得",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "🛒 楽天市場API": {
+            "main": [
+                [
+                    {
+                        "node": "📦 楽天データ整形",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "📦 楽天データ整形": {
+            "main": [
+                [
+                    {
+                        "node": "🔄 データ統合",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "🕷️ Amazon ReCommerce取得": {
+            "main": [
+                [
+                    {
+                        "node": "📄 HTML抽出",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "📄 HTML抽出": {
+            "main": [
+                [
+                    {
+                        "node": "📦 ReCommerceデータ整形",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "📦 ReCommerceデータ整形": {
+            "main": [
+                [
+                    {
+                        "node": "🔄 データ統合",
+                        "type": "main",
+                        "index": 1
+                    }
+                ]
+            ]
+        },
+        "🔄 データ統合": {
+            "main": [
+                [
+                    {
+                        "node": "📊 価格比較 (全件)",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    },
+    "settings": {
+        "executionOrder": "v1"
+    },
+    "staticData": null,
+    "tags": [],
+    "triggerCount": 0,
+    "updatedAt": "2026-01-25T00:00:00.000Z",
+    "versionId": "1"
+}
