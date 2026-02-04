@@ -1,0 +1,243 @@
+{
+    "name": "Integrated Mobile Ichiban & Rakuten (v2)",
+    "nodes": [
+        {
+            "parameters": {},
+            "id": "start-node",
+            "name": "Start",
+            "type": "n8n-nodes-base.start",
+            "typeVersion": 1,
+            "position": [
+                240,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "command": "python3 /Users/miwanoyoshitomo/Documents/n8n/scrape_mobile_ichiban.py --json"
+            },
+            "id": "exec-python-scraper",
+            "name": "Execute Mobile Python Scraper",
+            "type": "n8n-nodes-base.executeCommand",
+            "typeVersion": 1,
+            "position": [
+                460,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "jsCode": "const mobileProducts = JSON.parse(items[0].json.stdout);\nreturn mobileProducts.map(product => ({ json: product }));"
+            },
+            "id": "parse-python-output",
+            "name": "Parse Mobile JSON",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                680,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "assignments": {
+                    "assignments": [
+                        {
+                            "id": "keyword",
+                            "name": "keyword",
+                            "value": "iPhone 15",
+                            "type": "string"
+                        },
+                        {
+                            "id": "applicationId",
+                            "name": "applicationId",
+                            "value": "1004649499121188262",
+                            "type": "string"
+                        }
+                    ]
+                }
+            },
+            "id": "set-params",
+            "name": "Set Search Params",
+            "type": "n8n-nodes-base.set",
+            "typeVersion": 3.4,
+            "position": [
+                900,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "method": "GET",
+                "url": "https://app.rakuten.co.jp/services/api/IchibaItem/Search/20220601",
+                "sendQuery": true,
+                "queryParameters": {
+                    "parameters": [
+                        {
+                            "name": "applicationId",
+                            "value": "={{ $json.applicationId }}"
+                        },
+                        {
+                            "name": "keyword",
+                            "value": "={{ $json.keyword }}"
+                        },
+                        {
+                            "name": "hits",
+                            "value": "30"
+                        },
+                        {
+                            "name": "minPrice",
+                            "value": "80000"
+                        },
+                        {
+                            "name": "genreId",
+                            "value": "560202"
+                        }
+                    ]
+                },
+                "options": {}
+            },
+            "id": "rakuten-api",
+            "name": "Rakuten API",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                1120,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "jsCode": "// Extract Items from Rakuten Response\nconst items = $input.first().json.Items || [];\n\nconst excludeKeywords = [\n  'ケース', 'カバー', 'フィルム', 'ガラス', 'シート',\n  'ストラップ', 'ホルダー', 'スタンド', 'ポーチ', 'バンド',\n  'シール', 'ステッカー', 'リング', 'グリップ', 'アクセサリー',\n  'クロス', 'シンプル', 'レジン', 'デコ', 'ELECOM', 'エレコム',\n  '充電器', 'ケーブル', 'イヤホン', 'クリーナー', '100円', 'パネル', '修理', '交換', '部品', 'ジャンク'\n];\n\nconst results = [];\n\nif (!items.length) {\n  return [];\n}\n\nlet index = 0;\nfor (const item of items) {\n  const i = item.Item;\n  const name = i.itemName;\n  \n  if (excludeKeywords.some(kw => name.includes(kw))) continue;\n  if (name.includes('中古')) continue;\n  \n  // Extract Capacity for Matching\n  const capacityMatch = name.match(/(\\d+(?:GB|TB))/i);\n  const capacity = capacityMatch ? capacityMatch[1].toUpperCase() : 'UNKNOWN';\n\n  results.push({\n    json: {\n      merge_id: `rakuten_${index++}`,\n      source: '楽天市場',\n      name: name,\n      price: i.itemPrice,\n      item_code: i.itemCode,\n      capacity: capacity,\n      url: i.itemUrl,\n      shop: i.shopName\n    }\n  });\n}\n\nreturn results;"
+            },
+            "id": "parse-rakuten",
+            "name": "Format Rakuten Data",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                1340,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "jsCode": "// Compare Mobile Ichiban and Rakuten Data\nconst mobileItems = $('Parse Mobile JSON').all().map(i => i.json);\nconst rakutenItems = $input.all().map(i => i.json);\n\nconst results = [];\n\n// Normalize Logic\nfunction normalize(str) {\n    return str.replace(/[！-～]/g, s => String.fromCharCode(s.charCodeAt(0) - 0xFEE0)).toLowerCase();\n}\n\nmobileItems.forEach(mobile => {\n    const mobileNameNorm = normalize(mobile.name);\n    // Simple model extraction from name\n    const baseModelParts = mobile.name\n        .replace(mobile.capacity, '')\n        .replace('simfree', '')\n        .replace('未開封', '')\n        .replace('開封', '')\n        .trim()\n        .toLowerCase()\n        .split(' ');\n\n    let bestMatch = null;\n    let maxProfit = -Infinity;\n\n    rakutenItems.forEach(rakuten => {\n        // Capacity Mismatch check\n        if (rakuten.capacity !== mobile.capacity) return;\n\n        const rNameNorm = normalize(rakuten.name);\n        \n        // Match model keywords\n        if (baseModelParts.every(part => rNameNorm.includes(part))) {\n            const profit = mobile.price - rakuten.price;\n            if (profit > maxProfit) {\n                maxProfit = profit;\n                bestMatch = rakuten;\n            }\n        }\n    });\n\n    if (bestMatch) {\n        results.push({\n            '商品名': mobile.name,\n            'GB容量': mobile.capacity,\n            '状態': '新品',\n            'モバイル一番買取価格': mobile.price,\n            '楽天購入価格': bestMatch.price,\n            '識別コード': `${mobile.code || 'N/A'}_${bestMatch.item_code}`,\n            '差益': maxProfit,\n            '楽天URL': bestMatch.url,\n            'モバイル一番URL': mobile.url\n        });\n    }\n});\n\n// Sort by Profit\nresults.sort((a, b) => b['差益'] - a['差益']);\n\nreturn results.map(r => ({ json: r }));"
+            },
+            "id": "compare-logic",
+            "name": "Compare Logic",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                1560,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "operation": "append",
+                "documentId": {
+                    "__rl": true,
+                    "value": "1AW1qnLR122W1UXD3fSme0jVJdcuVjocAMeuJlLkamlg",
+                    "mode": "id"
+                },
+                "sheetName": {
+                    "__rl": true,
+                    "value": "JAN価格比較結果",
+                    "mode": "name"
+                },
+                "columns": {
+                    "mappingMode": "autoMapInputData",
+                    "value": {}
+                },
+                "options": {}
+            },
+            "id": "google-sheets",
+            "name": "Save to Sheets",
+            "type": "n8n-nodes-base.googleSheets",
+            "typeVersion": 4.5,
+            "position": [
+                1780,
+                300
+            ]
+        }
+    ],
+    "connections": {
+        "Start": {
+            "main": [
+                [
+                    {
+                        "node": "Execute Mobile Python Scraper",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Execute Mobile Python Scraper": {
+            "main": [
+                [
+                    {
+                        "node": "Parse Mobile JSON",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Parse Mobile JSON": {
+            "main": [
+                [
+                    {
+                        "node": "Set Search Params",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Set Search Params": {
+            "main": [
+                [
+                    {
+                        "node": "Rakuten API",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Rakuten API": {
+            "main": [
+                [
+                    {
+                        "node": "Format Rakuten Data",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Format Rakuten Data": {
+            "main": [
+                [
+                    {
+                        "node": "Compare Logic",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Compare Logic": {
+            "main": [
+                [
+                    {
+                        "node": "Save to Sheets",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    }
+}

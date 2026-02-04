@@ -1,0 +1,267 @@
+{
+    "name": "Integrated Price Comparison V8 (Env Fix)",
+    "nodes": [
+        {
+            "parameters": {},
+            "id": "start-node-v8",
+            "name": "Start",
+            "type": "n8n-nodes-base.manualTrigger",
+            "typeVersion": 1,
+            "position": [
+                240,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "jsCode": "// Load Environment Variables via Node.js process.env\n// This bypasses the $env restriction in expressions\nconst env = process.env;\n\nreturn [{\n  json: {\n    json_path: env.MOBILE_ICHIBAN_JSON_PATH || '/files/mobile_ichiban_prices.json',\n    keyword: env.SEARCH_KEYWORD || 'iPhone 15',\n    app_id: env.RAKUTEN_APP_ID || '1004649499121188262',\n    sheet_id: env.GOOGLE_SHEET_ID || '1AW1qnLR122W1UXD3fSme0jVJdcuVjocAMeuJlLkamlg'\n  }\n}];"
+            },
+            "id": "load-env-vars",
+            "name": "Load Env Vars",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                460,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "filePath": "={{ $json.json_path }}"
+            },
+            "id": "read-file-v8",
+            "name": "Read Local JSON File",
+            "type": "n8n-nodes-base.readBinaryFile",
+            "typeVersion": 1,
+            "position": [
+                680,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "jsCode": "try {\n  const binaryData = items[0].binary.data;\n  const jsonString = Buffer.from(binaryData.data, 'base64').toString('utf8');\n  const mobileProducts = JSON.parse(jsonString);\n  \n  // Pass through the config configs\n  const config = items[0].json;\n  \n  return mobileProducts.map(product => ({\n    json: {\n      ...product,\n      _config: config\n    }\n  }));\n} catch (error) {\n  throw new Error(`Failed to parse JSON file at ${items[0].json.json_path}. Error: ${error.message}`);\n}"
+            },
+            "id": "parse-json-file-v8",
+            "name": "Parse File Content",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                900,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "assignments": {
+                    "assignments": [
+                        {
+                            "id": "keyword",
+                            "name": "keyword",
+                            "value": "={{ $json._config.keyword }}",
+                            "type": "string"
+                        },
+                        {
+                            "id": "applicationId",
+                            "name": "applicationId",
+                            "value": "={{ $json._config.app_id }}",
+                            "type": "string"
+                        }
+                    ]
+                }
+            },
+            "id": "set-params-v8",
+            "name": "Set Search Params",
+            "type": "n8n-nodes-base.set",
+            "typeVersion": 3.4,
+            "position": [
+                1120,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "method": "GET",
+                "url": "https://app.rakuten.co.jp/services/api/IchibaItem/Search/20220601",
+                "sendQuery": true,
+                "queryParameters": {
+                    "parameters": [
+                        {
+                            "name": "applicationId",
+                            "value": "={{ $json.applicationId }}"
+                        },
+                        {
+                            "name": "keyword",
+                            "value": "={{ $json.keyword }}"
+                        },
+                        {
+                            "name": "hits",
+                            "value": "30"
+                        },
+                        {
+                            "name": "minPrice",
+                            "value": "80000"
+                        },
+                        {
+                            "name": "genreId",
+                            "value": "560202"
+                        }
+                    ]
+                },
+                "options": {}
+            },
+            "id": "rakuten-api-v8",
+            "name": "Rakuten API Search",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                1340,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "jsCode": "const items = $input.first().json.Items || [];\nconst results = [];\nif (!items.length) return [];\n\nfor (const item of items) {\n  const i = item.Item;\n  const name = i.itemName;\n  if (name.includes('中古')) continue;\n  const capMatch = name.match(/(\\d+(?:GB|TB))/i);\n  const capacity = capMatch ? capMatch[1].toUpperCase() : 'UNKNOWN';\n\n  results.push({\n    json: {\n      source: '楽天市場',\n      name: name,\n      price: i.itemPrice,\n      item_code: i.itemCode,\n      capacity: capacity,\n      url: i.itemUrl\n    }\n  });\n}\nreturn results;"
+            },
+            "id": "format-rakuten-v8",
+            "name": "Format Rakuten",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                1560,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "jsCode": "const mobileItems = $('Parse File Content').all().map(i => i.json);\nconst rakutenItems = $input.all().map(i => i.json);\nconst results = [];\n\n// _config extraction from first item for sheet usage\nconst config = mobileItems[0]?._config || {};\n\nfunction normalize(str) {\n    return str.replace(/[！-～]/g, s => String.fromCharCode(s.charCodeAt(0) - 0xFEE0)).toLowerCase();\n}\n\nmobileItems.forEach(mobile => {\n    if(mobile.error) return;\n    const mobileNameNorm = normalize(mobile.name);\n    const baseModelParts = mobile.name.replace(mobile.capacity, '').split(' ');\n    let bestMatch = null;\n    let maxProfit = -Infinity;\n\n    rakutenItems.forEach(rakuten => {\n        if (rakuten.capacity !== mobile.capacity) return;\n        const rNameNorm = normalize(rakuten.name);\n        if (baseModelParts.every(part => rNameNorm.includes(part.toLowerCase()))) {\n            const profit = mobile.price - rakuten.price;\n            if (profit > maxProfit) {\n                maxProfit = profit;\n                bestMatch = rakuten;\n            }\n        }\n    });\n\n    if (bestMatch) {\n        results.push({\n            '商品名': mobile.name,\n            'GB容量': mobile.capacity,\n            '状態': '新品',\n            'モバイル一番買取価格': mobile.price,\n            '楽天購入価格': bestMatch.price,\n            '識別コード': `${mobile.code || 'N/A'}_${bestMatch.item_code}`,\n            '差益': maxProfit,\n            '楽天URL': bestMatch.url,\n            'モバイル一番URL': mobile.url,\n            '_sheet_id': config.sheet_id // pass for next node\n        });\n    }\n});\nresults.sort((a,b) => b['差益'] - a['差益']);\nreturn results.map(r => ({ json: r }));"
+            },
+            "id": "compare-logic-v8",
+            "name": "Compare Logic",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                1780,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "operation": "append",
+                "documentId": {
+                    "__rl": true,
+                    "value": "={{ $json._sheet_id }}",
+                    "mode": "id"
+                },
+                "sheetName": {
+                    "__rl": true,
+                    "value": "JAN価格比較結果",
+                    "mode": "name"
+                },
+                "columns": {
+                    "mappingMode": "autoMapInputData",
+                    "value": {}
+                },
+                "options": {}
+            },
+            "id": "google-sheets-v8",
+            "name": "Save to Sheets",
+            "type": "n8n-nodes-base.googleSheets",
+            "typeVersion": 4.5,
+            "position": [
+                2000,
+                300
+            ]
+        }
+    ],
+    "connections": {
+        "Start": {
+            "main": [
+                [
+                    {
+                        "node": "Load Env Vars",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Load Env Vars": {
+            "main": [
+                [
+                    {
+                        "node": "Read Local JSON File",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Read Local JSON File": {
+            "main": [
+                [
+                    {
+                        "node": "Parse File Content",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Parse File Content": {
+            "main": [
+                [
+                    {
+                        "node": "Set Search Params",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Set Search Params": {
+            "main": [
+                [
+                    {
+                        "node": "Rakuten API Search",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Rakuten API Search": {
+            "main": [
+                [
+                    {
+                        "node": "Format Rakuten",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Format Rakuten": {
+            "main": [
+                [
+                    {
+                        "node": "Compare Logic",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Compare Logic": {
+            "main": [
+                [
+                    {
+                        "node": "Save to Sheets",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    }
+}

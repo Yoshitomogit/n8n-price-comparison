@@ -1,0 +1,219 @@
+{
+    "name": "Integrated Price Comparison V5 (Code Node Fixed)",
+    "nodes": [
+        {
+            "parameters": {},
+            "id": "start-node-v5",
+            "name": "Start",
+            "type": "n8n-nodes-base.manualTrigger",
+            "typeVersion": 1,
+            "position": [
+                240,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "jsCode": "const { execSync } = require('child_process');\ntry {\n  // Run Python script inside the container\n  // Note: This assumes python3 and playwright deps are installed in the container.\n  // If not, this step will fail at runtime, requiring a custom Docker image.\n  const cmd = 'python3 /files/scrape_mobile_ichiban.py --json';\n  const stdout = execSync(cmd).toString();\n  \n  const mobileProducts = JSON.parse(stdout);\n  return mobileProducts.map(product => ({ json: product }));\n} catch (error) {\n  throw new Error(`Python Execution Failed: ${error.message}`);\n}"
+            },
+            "id": "run-python-code-v5",
+            "name": "Run Python Scraper (Code Node)",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                460,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "assignments": {
+                    "assignments": [
+                        {
+                            "id": "keyword",
+                            "name": "keyword",
+                            "value": "iPhone 15",
+                            "type": "string"
+                        },
+                        {
+                            "id": "applicationId",
+                            "name": "applicationId",
+                            "value": "1004649499121188262",
+                            "type": "string"
+                        }
+                    ]
+                }
+            },
+            "id": "set-params-v5",
+            "name": "Set Parameters",
+            "type": "n8n-nodes-base.set",
+            "typeVersion": 3.4,
+            "position": [
+                680,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "method": "GET",
+                "url": "https://app.rakuten.co.jp/services/api/IchibaItem/Search/20220601",
+                "sendQuery": true,
+                "queryParameters": {
+                    "parameters": [
+                        {
+                            "name": "applicationId",
+                            "value": "={{ $json.applicationId }}"
+                        },
+                        {
+                            "name": "keyword",
+                            "value": "={{ $json.keyword }}"
+                        },
+                        {
+                            "name": "hits",
+                            "value": "30"
+                        },
+                        {
+                            "name": "minPrice",
+                            "value": "80000"
+                        },
+                        {
+                            "name": "genreId",
+                            "value": "560202"
+                        }
+                    ]
+                },
+                "options": {}
+            },
+            "id": "rakuten-api-v5",
+            "name": "Rakuten API Search",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                900,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "jsCode": "const items = $input.first().json.Items || [];\nconst results = [];\nif (!items.length) return [];\n\nfor (const item of items) {\n  const i = item.Item;\n  const name = i.itemName;\n  if (name.includes('中古')) continue;\n  const capMatch = name.match(/(\\d+(?:GB|TB))/i);\n  const capacity = capMatch ? capMatch[1].toUpperCase() : 'UNKNOWN';\n\n  results.push({\n    json: {\n      source: '楽天市場',\n      name: name,\n      price: i.itemPrice,\n      item_code: i.itemCode,\n      capacity: capacity,\n      url: i.itemUrl\n    }\n  });\n}\nreturn results;"
+            },
+            "id": "format-rakuten-v5",
+            "name": "Format Rakuten",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                1120,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "jsCode": "const mobileItems = $('Run Python Scraper (Code Node)').all().map(i => i.json);\nconst rakutenItems = $input.all().map(i => i.json);\nconst results = [];\n\nfunction normalize(str) {\n    return str.replace(/[！-～]/g, s => String.fromCharCode(s.charCodeAt(0) - 0xFEE0)).toLowerCase();\n}\n\nmobileItems.forEach(mobile => {\n    if(mobile.error) return;\n    const mobileNameNorm = normalize(mobile.name);\n    const baseModelParts = mobile.name.replace(mobile.capacity, '').split(' ');\n    let bestMatch = null;\n    let maxProfit = -Infinity;\n\n    rakutenItems.forEach(rakuten => {\n        if (rakuten.capacity !== mobile.capacity) return;\n        const rNameNorm = normalize(rakuten.name);\n        if (baseModelParts.every(part => rNameNorm.includes(part.toLowerCase()))) {\n            const profit = mobile.price - rakuten.price;\n            if (profit > maxProfit) {\n                maxProfit = profit;\n                bestMatch = rakuten;\n            }\n        }\n    });\n\n    if (bestMatch) {\n        results.push({\n            '商品名': mobile.name,\n            'GB容量': mobile.capacity,\n            '状態': '新品',\n            'モバイル一番買取価格': mobile.price,\n            '楽天購入価格': bestMatch.price,\n            '識別コード': `${mobile.code || 'N/A'}_${bestMatch.item_code}`,\n            '差益': maxProfit,\n            '楽天URL': bestMatch.url,\n            'モバイル一番URL': mobile.url\n        });\n    }\n});\nresults.sort((a,b) => b['差益'] - a['差益']);\nreturn results.map(r => ({ json: r }));"
+            },
+            "id": "compare-logic-v5",
+            "name": "Compare Logic",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                1340,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "operation": "append",
+                "documentId": {
+                    "__rl": true,
+                    "value": "1AW1qnLR122W1UXD3fSme0jVJdcuVjocAMeuJlLkamlg",
+                    "mode": "id"
+                },
+                "sheetName": {
+                    "__rl": true,
+                    "value": "JAN価格比較結果",
+                    "mode": "name"
+                },
+                "columns": {
+                    "mappingMode": "autoMapInputData",
+                    "value": {}
+                },
+                "options": {}
+            },
+            "id": "google-sheets-v5",
+            "name": "Save to Sheets",
+            "type": "n8n-nodes-base.googleSheets",
+            "typeVersion": 4.5,
+            "position": [
+                1560,
+                300
+            ]
+        }
+    ],
+    "connections": {
+        "Start": {
+            "main": [
+                [
+                    {
+                        "node": "Run Python Scraper (Code Node)",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Run Python Scraper (Code Node)": {
+            "main": [
+                [
+                    {
+                        "node": "Set Parameters",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Set Parameters": {
+            "main": [
+                [
+                    {
+                        "node": "Rakuten API Search",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Rakuten API Search": {
+            "main": [
+                [
+                    {
+                        "node": "Format Rakuten",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Format Rakuten": {
+            "main": [
+                [
+                    {
+                        "node": "Compare Logic",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Compare Logic": {
+            "main": [
+                [
+                    {
+                        "node": "Save to Sheets",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    }
+}

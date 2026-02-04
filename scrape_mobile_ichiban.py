@@ -79,13 +79,20 @@ async def scrape_mobile_ichiban(search_keyword: str = "iPhone 15") -> list:
                         name = await name_cell.inner_text()
                         name = name.strip()
                         
-                        # 新品価格（3列目）
-                        new_price_cell = cells[2]
-                        new_price_text = await new_price_cell.inner_text()
+                        # 容量の抽出 (例: 128GB, 256GB, 512GB, 1TB)
+                        capacity_match = re.search(r'(\d+(?:GB|TB))', name, re.IGNORECASE)
+                        capacity = capacity_match.group(1).upper() if capacity_match else "不明"
                         
-                        # 中古価格（4列目）
-                        used_price_cell = cells[3]
-                        used_price_text = await used_price_cell.inner_text()
+                        # 新品価格セルの処理
+                        new_price_cell = cells[2]
+                        # IDから商品コードを抽出 (例: NewPrice_S004221 -> S004221)
+                        # Playwrightのevaluateを使ってID属性を取得
+                        cell_id = await new_price_cell.get_attribute('id')
+                        product_code = ""
+                        if cell_id and '_' in cell_id:
+                            product_code = cell_id.split('_')[1]
+                        
+                        new_price_text = await new_price_cell.inner_text()
                         
                         # 価格を数値に変換
                         def parse_price(text):
@@ -95,28 +102,18 @@ async def scrape_mobile_ichiban(search_keyword: str = "iPhone 15") -> list:
                             return None
                         
                         new_price = parse_price(new_price_text)
-                        used_price = parse_price(used_price_text)
                         
-                        # 新品価格がある場合
+                        # 新品価格があり、かつ50000円以上の場合のみ抽出
                         if new_price and new_price >= 50000:
                             products.append({
                                 'source': 'モバイル一番',
-                                'name': f"{name} (新品/未開封)",
+                                'name': name,
+                                'capacity': capacity,
                                 'price': new_price,
+                                'code': product_code,
                                 'url': 'https://www.mobile-ichiban.com/',
                                 'shop': 'モバイル一番',
                                 'condition': '新品・未開封'
-                            })
-                        
-                        # 中古価格がある場合
-                        if used_price and used_price >= 50000:
-                            products.append({
-                                'source': 'モバイル一番',
-                                'name': f"{name} (中古/開封済み)",
-                                'price': used_price,
-                                'url': 'https://www.mobile-ichiban.com/',
-                                'shop': 'モバイル一番',
-                                'condition': '中古・開封済み'
                             })
                             
                 except Exception as e:
@@ -135,28 +132,151 @@ async def scrape_mobile_ichiban(search_keyword: str = "iPhone 15") -> list:
     return products
 
 
-async def main():
-    """メイン関数"""
-    print("=" * 50)
-    print("モバイル一番 スクレイピング開始")
-    print("=" * 50)
+import argparse
+import sys
+
+# Logging helper
+def log(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
+
+async def scrape_mobile_ichiban(search_keyword: str = "iPhone 15", json_mode: bool = False) -> list:
+    """
+    モバイル一番から商品価格をスクレイピング
+    """
+    products = []
     
-    products = await scrape_mobile_ichiban("iPhone 15")
-    
-    print("\n=== 取得した商品 ===")
-    for i, p in enumerate(products, 1):
-        print(f"{i}. {p['name']}")
-        print(f"   価格: {p['price']:,}円")
-        print()
-    
-    # JSONファイルに保存
-    output_file = "mobile_ichiban_prices.json"
-    with open(output_file, 'w', encoding='utf-8') as f:
-        json.dump(products, f, ensure_ascii=False, indent=2)
-    print(f"結果を {output_file} に保存しました")
+    # Customize logger based on mode
+    def log_msg(msg):
+        if not json_mode:
+            print(msg)
+        else:
+            log(msg)
+
+    async with async_playwright() as p:
+        # ブラウザ起動（ヘッドレスモード）
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        
+        try:
+            log_msg(f"サイトにアクセス中: https://www.mobile-ichiban.com/")
+            await page.goto("https://www.mobile-ichiban.com/", timeout=30000)
+            await page.wait_for_load_state("networkidle")
+            
+            log_msg(f"検索中: {search_keyword}")
+            search_input = await page.query_selector('#G01SearchIpt')
+            if search_input:
+                await search_input.fill(search_keyword)
+                
+                search_button = await page.query_selector('#G01Searchbtn')
+                if search_button:
+                    await search_button.click()
+                else:
+                    await search_input.press("Enter")
+                
+                await page.wait_for_load_state("networkidle")
+                await asyncio.sleep(2)
+            else:
+                log_msg("検索ボックスが見つかりません")
+            
+            log_msg("リストビューに切り替え中...")
+            list_view_button = await page.query_selector('#g01List')
+            if list_view_button:
+                await list_view_button.click()
+                await asyncio.sleep(2)
+            
+            await page.mouse.wheel(0, 500)
+            await asyncio.sleep(1)
+            
+            log_msg("価格情報を取得中...")
+            rows = await page.query_selector_all('tr.first_Tr')
+            log_msg(f"見つかった行数: {len(rows)}")
+            
+            for row in rows:
+                try:
+                    cells = await row.query_selector_all('td')
+                    if len(cells) >= 4:
+                        name_cell = cells[1]
+                        name = await name_cell.inner_text()
+                        name = name.strip()
+                        
+                        capacity_match = re.search(r'(\d+(?:GB|TB))', name, re.IGNORECASE)
+                        capacity = capacity_match.group(1).upper() if capacity_match else "不明"
+                        
+                        new_price_cell = cells[2]
+                        cell_id = await new_price_cell.get_attribute('id')
+                        product_code = ""
+                        if cell_id and '_' in cell_id:
+                            product_code = cell_id.split('_')[1]
+                        
+                        new_price_text = await new_price_cell.inner_text()
+                        
+                        def parse_price(text):
+                            match = re.search(r'([\d,]+)', text)
+                            if match:
+                                return int(match.group(1).replace(',', ''))
+                            return None
+                        
+                        new_price = parse_price(new_price_text)
+                        
+                        if new_price and new_price >= 50000:
+                            products.append({
+                                'source': 'モバイル一番',
+                                'name': name,
+                                'capacity': capacity,
+                                'price': new_price,
+                                'code': product_code,
+                                'url': 'https://www.mobile-ichiban.com/',
+                                'shop': 'モバイル一番',
+                                'condition': '新品・未開封'
+                            })
+                            
+                except Exception as e:
+                    log_msg(f"行の解析エラー: {e}")
+                    continue
+            
+            log_msg(f"取得した商品数: {len(products)}")
+            
+        except Exception as e:
+            log_msg(f"スクレイピングエラー: {e}")
+            import traceback
+            if not json_mode:
+                traceback.print_exc()
+            else:
+                traceback.print_exc(file=sys.stderr)
+        finally:
+            await browser.close()
     
     return products
 
+
+async def main():
+    parser = argparse.ArgumentParser(description='Scrape Mobile Ichiban prices.')
+    parser.add_argument('--json', action='store_true', help='Output results in JSON format only')
+    parser.add_argument('--keyword', type=str, default='iPhone 15', help='Search keyword')
+    args = parser.parse_args()
+
+    if not args.json:
+        print("=" * 50)
+        print("モバイル一番 スクレイピング開始")
+        print("=" * 50)
+    
+    products = await scrape_mobile_ichiban(args.keyword, json_mode=args.json)
+    
+    if args.json:
+        # Strict JSON output to stdout
+        print(json.dumps(products, ensure_ascii=False))
+    else:
+        print("\n=== 取得した商品 ===")
+        for i, p in enumerate(products, 1):
+            print(f"{i}. {p['name']}")
+            print(f"   価格: {p['price']:,}円")
+            print()
+        
+        # Save to file as backup even in normal mode
+        output_file = "mobile_ichiban_prices.json"
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(products, f, ensure_ascii=False, indent=2)
+        print(f"結果を {output_file} に保存しました")
 
 if __name__ == '__main__':
     asyncio.run(main())

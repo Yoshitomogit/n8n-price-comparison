@@ -1,0 +1,174 @@
+{
+    "name": "【デバッグ用】Amazon ReCommerce 単体テスト",
+    "nodes": [
+        {
+            "parameters": {},
+            "id": "manual-trigger",
+            "name": "手動実行",
+            "type": "n8n-nodes-base.manualTrigger",
+            "typeVersion": 1,
+            "position": [
+                0,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "values": {
+                    "string": [
+                        {
+                            "name": "keyword",
+                            "value": "iPhone 15"
+                        }
+                    ]
+                },
+                "options": {}
+            },
+            "id": "set-keyword",
+            "name": "キーワード設定",
+            "type": "n8n-nodes-base.set",
+            "typeVersion": 3.4,
+            "position": [
+                220,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "method": "GET",
+                "url": "https://www.recommerce.co.jp/expensive/search_result.php",
+                "authentication": "none",
+                "sendQuery": true,
+                "queryParameters": {
+                    "parameters": [
+                        {
+                            "name": "word",
+                            "value": "={{ $json.keyword }}"
+                        },
+                        {
+                            "name": "category_selection",
+                            "value": ""
+                        }
+                    ]
+                },
+                "options": {
+                    "responseFormat": "string",
+                    "headerParameters": {
+                        "parameters": [
+                            {
+                                "name": "User-Agent",
+                                "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                            }
+                        ]
+                    }
+                }
+            },
+            "id": "recommerce-http",
+            "name": "🕷️ Amazon ReCommerce取得",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                440,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "operation": "extractHtmlContent",
+                "dataPropertyName": "data",
+                "extractionValues": {
+                    "values": [
+                        {
+                            "key": "name",
+                            "cssSelector": "td.li_title",
+                            "returnArray": true
+                        },
+                        {
+                            "key": "price_range",
+                            "cssSelector": "td.li_price",
+                            "returnArray": true
+                        }
+                    ]
+                },
+                "options": {
+                    "trimValues": true
+                }
+            },
+            "id": "extract-html",
+            "name": "📄 HTML抽出",
+            "type": "n8n-nodes-base.htmlExtract",
+            "typeVersion": 1,
+            "position": [
+                660,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "jsCode": "const items = $input.all();\nconst results = [];\n\nconst names = items[0].json.name || [];\nconst prices = items[0].json.price_range || [];\n\nfor (let i = 0; i < names.length; i++) {\n  results.push({\n    json: {\n      index: i,\n      raw_name: names[i],\n      raw_price_string: prices[i]\n    }\n  });\n}\n\nreturn results;"
+            },
+            "id": "debug-output",
+            "name": "🔍 生データ確認",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                880,
+                0
+            ]
+        }
+    ],
+    "connections": {
+        "手動実行": {
+            "main": [
+                [
+                    {
+                        "node": "キーワード設定",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "キーワード設定": {
+            "main": [
+                [
+                    {
+                        "node": "🕷️ Amazon ReCommerce取得",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "🕷️ Amazon ReCommerce取得": {
+            "main": [
+                [
+                    {
+                        "node": "📄 HTML抽出",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "📄 HTML抽出": {
+            "main": [
+                [
+                    {
+                        "node": "🔍 生データ確認",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    },
+    "settings": {
+        "executionOrder": "v1"
+    },
+    "staticData": null,
+    "tags": [],
+    "triggerCount": 0,
+    "updatedAt": "2026-01-25T00:00:00.000Z",
+    "versionId": "1"
+}

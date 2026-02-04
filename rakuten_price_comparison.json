@@ -1,5 +1,5 @@
 {
-  "name": "楽天市場 vs Amazon ReCommerce 価格比較",
+  "name": "楽天市場 vs ジャンぱら/イオシス/モバイル一番 価格比較 (JANコード)",
   "nodes": [
     {
       "parameters": {
@@ -83,7 +83,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// 楽天APIレスポンスから商品データを抽出（アクセサリー除外）\nconst items = $input.first().json.Items || [];\n\n// 除外キーワード（アクセサリー類）\nconst excludeKeywords = [\n  'ケース', 'カバー', 'フィルム', 'ガラス', 'シート',\n  'ストラップ', 'ホルダー', 'スタンド', 'ポーチ', 'バンド',\n  'シール', 'ステッカー', 'リング', 'グリップ', 'アクセサリー',\n  'クロス', 'シンプル', 'レジン', 'デコ', 'ELECOM', 'エレコム',\n  '充電器', 'ケーブル', 'イヤホン', 'クリーナー', '100円'\n];\n\n// 最低価格（本体価格帯を想定：5万円以上）\nconst minPrice = 50000;\n\nconst filtered = items.filter(item => {\n  const name = item.Item.itemName;\n  const price = item.Item.itemPrice;\n  \n  // アクセサリーキーワードを含む商品を除外\n  const isAccessory = excludeKeywords.some(kw => name.includes(kw));\n  \n  // 価格が安すぎる商品を除外（本体価格帯のみ）\n  const isPriceReasonable = price >= minPrice;\n  \n  return !isAccessory && isPriceReasonable;\n});\n\nreturn filtered.map(item => {\n  const i = item.Item;\n  return {\n    json: {\n      source: '楽天市場',\n      name: i.itemName,\n      price: i.itemPrice,\n      url: i.itemUrl,\n      shop: i.shopName,\n      availability: i.availability === 1 ? '在庫あり' : '在庫なし'\n    }\n  };\n});"
+        "jsCode": "// 楽天APIレスポンスから商品データ、JANコード、ブランド、型番(MPN)を抽出\nconst items = $input.first().json.Items || [];\n\nconst excludeKeywords = [\n  'ケース', 'カバー', 'フィルム', 'ガラス', 'シート',\n  'ストラップ', 'ホルダー', 'スタンド', 'ポーチ', 'バンド',\n  'シール', 'ステッカー', 'リング', 'グリップ', 'アクセサリー',\n  'クロス', 'シンプル', 'レジン', 'デコ', 'ELECOM', 'エレコム',\n  '充電器', 'ケーブル', 'イヤホン', 'クリーナー', '100円'\n];\n\n// 主要ブランドリスト（拡張可能）\nconst majorBrands = [\n  'Apple', 'Sony', 'Panasonic', 'Canon', 'Nikon', 'Olympus', 'Fujifilm',\n  'Sharp', 'Toshiba', 'Hitachi', 'Samsung', 'LG', 'Dyson', 'Bose',\n  'Nintendo', 'PlayStation', 'Microsoft', 'Google', 'Amazon',\n  'Yamaha', 'Denon', 'Onkyo', 'JVC', 'Kenwood', 'Pioneer',\n  'Asus', 'Acer', 'Lenovo', 'HP', 'Dell', 'Epson', 'Brother'\n];\n\nconst results = [];\nconst janRegex = /(45\\d{11}|49\\d{11})/;\nconst normalizeText = (value) => (value || '').toString().replace(/[-―ー\\s]/g, '');\n\nif (!items.length) {\n  return [{ json: { message: '楽天APIのItemsが空です', debug_keys: Object.keys($input.first().json || {}) } }];\n}\n\nlet index = 0;\nfor (const item of items) {\n  const i = item.Item;\n  const name = i.itemName;\n  const caption = i.itemCaption || '';\n  \n  if (excludeKeywords.some(kw => name.includes(kw))) continue;\n  \n  // 1. JANコード抽出\n  const janCandidates = [\n    i.janCode,\n    i.jan,\n    i.itemNumber,\n    i.productId,\n    name + ' ' + caption\n  ].map(normalizeText).filter(Boolean);\n  let jan = null;\n  for (const candidate of janCandidates) {\n    const janMatch = candidate.match(janRegex);\n    if (janMatch) {\n      jan = janMatch[0];\n      break;\n    }\n  }\n  \n  // 2. ブランド名抽出\n  let brand = null;\n  const lowerName = name.toLowerCase();\n  for (const b of majorBrands) {\n    if (lowerName.includes(b.toLowerCase())) {\n      brand = b;\n      break;\n    }\n  }\n  \n  // 3. 型番(MPN)抽出\n  let mpn = null;\n  const specificMpnMatch = (name + ' ' + caption).match(/(?:型番|Model|品番)[:：\\s]*([A-Z0-9\\-]{3,})/i);\n  if (specificMpnMatch) {\n    mpn = specificMpnMatch[1];\n  } else {\n    const tokens = name.split(/[\\s\\u3000\\(\\)\\[\\]「」【】]+/);\n    for (const token of tokens) {\n      if (/^[A-Z0-9\\-]{3,}$/i.test(token) && /[0-9]/.test(token) && !/^(GB|TB|MB|cm|mm|kg|Hz)$/i.test(token)) {\n        if (brand && token.toLowerCase() === brand.toLowerCase()) continue;\n        mpn = token;\n        break;\n      }\n    }\n  }\n  \n  // 検索用キーワードの決定 (優先順位: JAN -> Brand+MPN -> Name)\n  let searchTerm = '';\n  let searchType = 'unknown';\n  \n  if (jan) {\n    searchTerm = jan;\n    searchType = 'JAN';\n  } else if (brand && mpn) {\n    searchTerm = `${brand} ${mpn}`;\n    searchType = 'Brand_MPN';\n  } else {\n    // 商品名クリーニング (【】や[]で囲まれたPR文言を除去)\n    let cleanName = name;\n    // 先頭のブラケット除去\n    cleanName = cleanName.replace(/^([【\\[［\\(].+?[】\\]］\\)])\\s*/, '');\n    // 記号をスペースに置換\n    cleanName = cleanName.replace(/[【】\\[\\]［］\\(\\)\\|／\\/]/g, ' ');\n    // 連続するスペースを統合\n    cleanName = cleanName.replace(/\\s+/g, ' ').trim();\n    // 長すぎる場合はカット (検索エンジンの許容範囲へ)\n    searchTerm = cleanName.substring(0, 30).trim();\n    searchType = 'Name_Fallback';\n  }\n\n  // マージ用ID (一意性を確保)\n  const mergeId = `item_${index++}_${Date.now()}`;\n\n  results.push({\n    json: {\n      merge_id: mergeId,\n      search_term: searchTerm,\n      search_type: searchType,\n      source: '楽天市場',\n      name: name,\n      price: i.itemPrice,\n      jan: jan || 'JAN_MISSING',\n      raw_janCode: i.janCode || 'null',\n      raw_itemNumber: i.itemNumber || 'null',\n      brand: brand || 'Unknown',\n      mpn: mpn || 'Unknown',\n      url: i.itemUrl,\n      shop: i.shopName,\n      _debug_items_total: items.length,\n      _debug_results_index: results.length\n    }\n  });\n}\n\nif (results.length === 0) {\n  return [{\n    json: {\n      message: '有効な商品が見つかりませんでした (Rakuten API returned 0 valid items)',\n      debug_item_count: items.length,\n      _debug_items_total: items.length,\n      _debug_results_count: 0\n    }\n  }];\n}\n\n// デバッグ情報を最初の結果に追加\nif (results.length > 0) {\n  results[0].json._debug_summary = {\n    totalItems: items.length,\n    totalResults: results.length,\n    firstSearchTerm: results[0].json.search_term,\n    firstSearchType: results[0].json.search_type,\n    firstJan: results[0].json.jan\n  };\n}\n\nreturn results;"
       },
       "id": "parse-rakuten",
       "name": "📦 楽天データ整形",
@@ -96,95 +96,92 @@
     },
     {
       "parameters": {
+        "jsCode": "// 他サイト検索用プレースホルダー\n// ここでBrand + MPN を使ってeBayやGoogle Shoppingなどを検索する拡張が可能\nreturn $input.all().map(item => {\n  const i = item.json;\n  return {\n    json: {\n      ...i,\n      search_query_brand_mpn: `${i.brand} ${i.mpn}`\n    }\n  };\n});"
+      },
+      "id": "prepare-multisite-search",
+      "name": "🔍 他サイト検索準備 (Brand/MPN)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        300
+      ]
+    },
+    {
+      "parameters": {
         "method": "GET",
-        "url": "https://www.recommerce.co.jp/expensive/search_result.php",
-        "authentication": "none",
+        "url": "https://www.janpara.co.jp/buy/search/result/",
         "sendQuery": true,
         "queryParameters": {
           "parameters": [
             {
-              "name": "word",
-              "value": "={{ $json.keyword }}"
+              "name": "ORDER",
+              "value": "1"
             },
             {
-              "name": "category_selection",
-              "value": ""
+              "name": "S_KIND",
+              "value": "0"
+            },
+            {
+              "name": "KEYWORDS",
+              "value": "={{ $json.search_term }}"
             }
           ]
         },
         "options": {
           "responseFormat": "string",
-          "headerParameters": {
-            "parameters": [
-              {
-                "name": "User-Agent",
-                "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-              }
-            ]
+          "batching": {
+            "batchSize": 1,
+            "batchInterval": 3000
           }
         }
       },
-      "id": "recommerce-http",
-      "name": "🕷️ Amazon ReCommerce取得",
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "id": "janpara-http",
+      "name": "🕷️ じゃんぱら取得",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        440,
-        220
+        880,
+        -100
       ]
     },
     {
       "parameters": {
-        "operation": "extractHtmlContent",
-        "dataPropertyName": "data",
-        "extractionValues": {
-          "values": [
+        "method": "GET",
+        "url": "https://k-tai-iosys.com/search.php",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
             {
-              "key": "name",
-              "cssSelector": "td.li_title",
-              "returnArray": true
+              "name": "flag",
+              "value": "fw_search"
             },
             {
-              "key": "price_range",
-              "cssSelector": "td.li_price",
-              "returnArray": true
+              "name": "word",
+              "value": "={{ $json.search_term }}"
             }
           ]
         },
         "options": {
-          "trimValues": true
+          "responseFormat": "string",
+          "batching": {
+            "batchSize": 1,
+            "batchInterval": 2000
+          }
         }
       },
-      "id": "extract-html",
-      "name": "📄 HTML抽出",
-      "type": "n8n-nodes-base.htmlExtract",
-      "typeVersion": 1,
-      "position": [
-        600,
-        220
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "// ReCommerceデータを整形\nconst items = $input.all();\nconst products = [];\n\n// HTML Extractの結果は配列の配列になっている可能性があるため展開\nconst names = items[0].json.name || [];\nconst priceRanges = items[0].json.price_range || [];\n\nfor (let i = 0; i < names.length; i++) {\n  const name = names[i];\n  const priceRange = priceRanges[i];\n  \n  if (!name || (!name.includes('iPhone') && !name.includes('Pixel'))) continue;\n  \n  // 価格抽出: \"買取価格：44,625円～89,250円\" -> 89250\n  const parsePrice = (str) => {\n    if (!str) return { min: 0, max: 0 };\n    const clean = str.replace('買取価格：', '');\n    const parts = clean.split('～');\n    const min = parseInt(parts[0].replace(/[^0-9]/g, ''), 10) || 0;\n    const max = parts[1] ? parseInt(parts[1].replace(/[^0-9]/g, ''), 10) : min;\n    return { min, max };\n  };\n  \n  const { min, max } = parsePrice(priceRange);\n  \n  // 上限買取価格を採用\n  if (max >= 10000) {\n    products.push({\n      json: {\n        source: 'Amazon ReCommerce',\n        name: name,\n        price: max,\n        price_min: min,\n        url: 'https://www.recommerce.co.jp/',\n        shop: 'Amazon ReCommerce',\n        condition: 'HP上限価格'\n      }\n    });\n  }\n}\n\nreturn products.length > 0 ? products : [{ json: { message: 'Amazon ReCommerceの商品が見つかりませんでした' } }];"
-      },
-      "id": "format-recommerce-data",
-      "name": "📦 ReCommerceデータ整形",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        760,
-        220
-      ]
-    },
-    {
-      "parameters": {
-        "mode": "append"
-      },
-      "id": "merge-data",
-      "name": "🔄 データ統合",
-      "type": "n8n-nodes-base.merge",
-      "typeVersion": 3,
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 4000,
+      "id": "iosys-http",
+      "name": "🕷️ イオシス取得",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [
         880,
         100
@@ -192,10 +189,53 @@
     },
     {
       "parameters": {
-        "jsCode": "// 価格比較ロジック（せどり利益計算）\nconst items = $input.all();\nconst results = [];\nconst threshold = 2000; // 利益の閾値（円）\n\n// 楽天とAmazon ReCommerceのデータを分類\nconst rakutenItems = items.filter(i => i.json.source === '楽天市場');\nconst amazonItems = items.filter(i => i.json.source === 'Amazon ReCommerce');\n\nconsole.log('楽天商品数:', rakutenItems.length);\nconsole.log('Amazon商品数:', amazonItems.length);\n\n// スペック抽出関数\nfunction extractSpecs(name) {\n  const specs = {\n    model: '',\n    storage: '',\n    condition: ''\n  };\n  \n  // モデル判定\n  if (name.includes('Pro Max') || name.includes('ProMax')) {\n    specs.model = 'iPhone 15 Pro Max';\n  } else if (name.includes('Pro')) {\n    specs.model = 'iPhone 15 Pro';\n  } else if (name.includes('15') && !name.includes('Plus')) {\n    specs.model = 'iPhone 15';\n  } else if (name.includes('Plus')) {\n    specs.model = 'iPhone 15 Plus';\n  }\n  \n  // ストレージ判定\n  if (name.includes('512GB') || name.includes('512gb')) {\n    specs.storage = '512GB';\n  } else if (name.includes('256GB') || name.includes('256gb')) {\n    specs.storage = '256GB';\n  } else if (name.includes('128GB') || name.includes('128gb')) {\n    specs.storage = '128GB';\n  } else if (name.includes('1TB') || name.includes('1tb')) {\n    specs.storage = '1TB';\n  }\n  \n  return specs;\n}\n\n// スペック比較\nfor (const amazon of amazonItems) {\n  const amzSpecs = extractSpecs(amazon.json.name);\n  \n  // スペックが抽出できない場合はスキップ\n  if (!amzSpecs.model || !amzSpecs.storage) continue;\n  \n  for (const rakuten of rakutenItems) {\n    const rakutenSpecs = extractSpecs(rakuten.json.name);\n    \n    // 同一スペック（モデル・容量）のみ比較\n    // 解説: Amazon側は「上限買取価格」なので、楽天側は「新品」に近いものと比較するのが安全だが、\n    // ここではシンプルにスペック一致のみで比較し、詳細は人間が判断するようにする。\n    if (amzSpecs.model === rakutenSpecs.model && \n        amzSpecs.storage === rakutenSpecs.storage) {\n      \n      // 利益計算 = Amazon買取価格 - 楽天販売価格\n      const profit = amazon.json.price - rakuten.json.price;\n      \n      // 利益が閾値以上の場合のみ結果に追加\n      if (profit >= threshold) {\n        results.push({\n          json: {\n            比較日時: new Date().toISOString(),\n            モデル: amzSpecs.model,\n            容量: amzSpecs.storage,\n            商品名_Amazon: amazon.json.name,\n            商品名_楽天: rakuten.json.name,\n            買取価格_Amazon: amazon.json.price,\n            販売価格_楽天: rakuten.json.price,\n            想定差益: profit,\n            判定: '利益あり',\n            URL_Amazon: amazon.json.url,\n            URL_楽天: rakuten.json.url\n          }\n        });\n      }\n    }\n  }\n}\n\n// 結果がない場合のメッセージ\nif (results.length === 0) {\n  return [{\n    json: {\n      message: '同一スペックで利益' + threshold + '円以上の商品は見つかりませんでした',\n      debug_楽天件数: rakutenItems.length,\n      debug_Amazon件数: amazonItems.length\n    }\n  }];\n}\n\nreturn results;"
+        "method": "GET",
+        "url": "https://www.mobile-ichiban.com/Prod/1",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "string"
+        }
       },
-      "id": "compare-prices",
-      "name": "📊 価格比較 (差額2000円以上)",
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 4000,
+      "id": "mobile-ichiban-http",
+      "name": "🕷️ モバイル一番取得",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// じゃんぱらレスポンス解析 (全件処理)\nconst allInputs = $input.all();\nreturn allInputs.map((item, index) => {\n  const input = item.json;\n  \n  // エラーの場合のハンドリング\n  if (input.error || (!input.data && typeof input !== 'string')) {\n    // 親ノードからmerge_idとjanを復元\n    let restoreMergeId = null;\n    let restoreJan = null;\n    let restoreSearchTerm = null;\n    try {\n      const parents = $node[\"📦 楽天データ整形\"].all();\n      if (parents && parents[index]) {\n        restoreMergeId = parents[index].json.merge_id;\n        restoreJan = parents[index].json.jan;\n        restoreSearchTerm = parents[index].json.search_term;\n      }\n    } catch(e) {}\n    \n    return {\n      json: {\n        merge_id: restoreMergeId || input.merge_id || `janpara_error_${index}`,\n        jan: restoreJan || input.jan || 'UNKNOWN',\n        search_term: restoreSearchTerm || input.search_term || 'UNKNOWN',\n        error: 'Fetch Failed or Empty',\n        janpara_unused: 0,\n        janpara_used: 0,\n        _debug_janpara_error: true,\n        _debug_input_keys: Object.keys(input || {}),\n        _debug_input_type: typeof input\n      }\n    };\n  }\n\n  // HTMLデータ取得\n  const html = (typeof input === 'string') ? input : (input.data || input.body || input.response || '');\n  let mergeId = input.merge_id;\n  let jan = input.jan;\n  let searchTerm = input.search_term;\n\n  // 親ノードから補完\n  if (!mergeId || !jan) {\n    try {\n      const parents = $node[\"📦 楽天データ整形\"].all();\n      if (parents && parents[index]) {\n        mergeId = mergeId || parents[index].json.merge_id;\n        jan = jan || parents[index].json.jan;\n        searchTerm = searchTerm || parents[index].json.search_term;\n      }\n    } catch(e) {}\n  }\n\n  const clean = html.replace(/\\s+/g, ' ');\n  const parsePrice = (str) => {\n    if (!str) return 0;\n    const m = str.match(/([0-9]{1,3}(?:,[0-9]{3})+)/);\n    return m ? parseInt(m[1].replace(/,/g, ''), 10) : 0;\n  };\n\n  // より柔軟な価格抽出パターン\n  const unusedPatterns = [\n    /未使用[\\s\\S]{0,300}?(?:price|class=[\"']price[\"'])[^>]*>([0-9,]+)/i,\n    /未使用[\\s\\S]{0,300}?([0-9]{1,3}(?:,[0-9]{3})+)\\s*円/i,\n    /<div[^>]*class=[\"']unused[\"'][\\s\\S]{0,300}?([0-9]{1,3}(?:,[0-9]{3})+)/i\n  ];\n  const usedPatterns = [\n    /中古[\\s\\S]{0,300}?(?:price|class=[\"']price[\"'])[^>]*>([0-9,]+)/i,\n    /中古[\\s\\S]{0,300}?([0-9]{1,3}(?:,[0-9]{3})+)\\s*円/i,\n    /<div[^>]*class=[\"']used[\"'][\\s\\S]{0,300}?([0-9]{1,3}(?:,[0-9]{3})+)/i\n  ];\n\n  let unusedPrice = 0;\n  let usedPrice = 0;\n  for (const p of unusedPatterns) {\n    const m = clean.match(p);\n    if (m) {\n      unusedPrice = parsePrice(m[1]);\n      if (unusedPrice > 0) break;\n    }\n  }\n  for (const p of usedPatterns) {\n    const m = clean.match(p);\n    if (m) {\n      usedPrice = parsePrice(m[1]);\n      if (usedPrice > 0) break;\n    }\n  }\n\n  // fallback: 価格一覧から最大値を拾う\n  if (unusedPrice === 0 && usedPrice === 0) {\n    const all = [...clean.matchAll(/([0-9]{1,3}(?:,[0-9]{3})+)\\s*円/g)]\n      .map(m => parseInt(m[1].replace(/,/g, ''), 10))\n      .filter(n => n > 0 && n < 10000000);\n    if (all.length > 0) {\n      usedPrice = Math.max(...all);\n    }\n  }\n\n  const result = {\n    json: {\n      merge_id: mergeId || `janpara_${index}`,\n      jan: jan || 'UNKNOWN',\n      search_term: searchTerm || 'UNKNOWN',\n      janpara_unused: unusedPrice,\n      janpara_used: usedPrice,\n      janpara_debug_has_html: html.length > 0,\n      janpara_debug_html_length: html.length\n    }\n  };\n  \n  // デバッグ情報を最初のアイテムに追加\n  if (index === 0) {\n    result.json._debug_janpara = {\n      inputCount: allInputs.length,\n      htmlLength: html.length,\n      mergeId: mergeId || null,\n      jan: jan || null,\n      searchTerm: searchTerm || null,\n      unusedPrice: unusedPrice,\n      usedPrice: usedPrice,\n      htmlPreview: html.substring(0, 500).replace(/\\n/g, ' ')\n    };\n  }\n  \n  return result;\n});"
+      },
+      "id": "parse-janpara",
+      "name": "📦 じゃんぱら解析",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// イオシスレスポンス解析 (全件処理)\nconst allInputs = $input.all();\nreturn allInputs.map((item, index) => {\n  const input = item.json;\n  \n  // エラーハンドリング\n  if (input.error || (!input.data && typeof input !== 'string')) {\n    let restoreMergeId = null;\n    let restoreJan = null;\n    let restoreSearchTerm = null;\n    try {\n      const parents = $node[\"📦 楽天データ整形\"].all();\n      if (parents && parents[index]) {\n        restoreMergeId = parents[index].json.merge_id;\n        restoreJan = parents[index].json.jan;\n        restoreSearchTerm = parents[index].json.search_term;\n      }\n    } catch(e) {}\n    \n    return {\n      json: {\n        merge_id: restoreMergeId || input.merge_id || `iosys_error_${index}`,\n        jan: restoreJan || input.jan || 'UNKNOWN',\n        search_term: restoreSearchTerm || input.search_term || 'UNKNOWN',\n        error: 'Fetch Failed or Empty',\n        iosys_unopened: 0,\n        iosys_used_a: 0,\n        _debug_iosys_error: true,\n        _debug_input_keys: Object.keys(input || {}),\n        _debug_input_type: typeof input\n      }\n    };\n  }\n\n  // HTMLデータ取得\n  const html = (typeof input === 'string') ? input : (input.data || input.body || input.response || '');\n  let mergeId = input.merge_id;\n  let jan = input.jan;\n  let searchTerm = input.search_term;\n\n  // 親ノードから補完\n  if (!mergeId || !jan) {\n    try {\n      const parents = $node[\"📦 楽天データ整形\"].all();\n      if (parents && parents[index]) {\n        mergeId = mergeId || parents[index].json.merge_id;\n        jan = jan || parents[index].json.jan;\n        searchTerm = searchTerm || parents[index].json.search_term;\n      }\n    } catch(e) {}\n  }\n\n  const clean = html.replace(/\\s+/g, ' ');\n  const parsePrice = (str) => {\n    if (!str) return 0;\n    const m = str.match(/([0-9]{1,3}(?:,[0-9]{3})+)/);\n    return m ? parseInt(m[1].replace(/,/g, ''), 10) : 0;\n  };\n\n  // より柔軟な価格抽出パターン\n  const unopenedPatterns = [\n    /未使用[\\s\\S]{0,300}?(?:price|class=[\"']price[\"'])[^>]*>([0-9,]+)/i,\n    /未使用[\\s\\S]{0,300}?([0-9]{1,3}(?:,[0-9]{3})+)\\s*円/i,\n    /未開封[\\s\\S]{0,300}?(?:price|class=[\"']price[\"'])[^>]*>([0-9,]+)/i\n  ];\n  const usedAPatterns = [\n    /中古A[\\s\\S]{0,300}?(?:price|class=[\"']price[\"'])[^>]*>([0-9,]+)/i,\n    /中古A[\\s\\S]{0,300}?([0-9]{1,3}(?:,[0-9]{3})+)\\s*円/i,\n    /<td[^>]*class=[\"']price[\"'][^>]*>([0-9,]+)/i\n  ];\n\n  let unopenedPrice = 0;\n  let usedAPrice = 0;\n  for (const p of unopenedPatterns) {\n    const m = clean.match(p);\n    if (m) {\n      unopenedPrice = parsePrice(m[1]);\n      if (unopenedPrice > 0) break;\n    }\n  }\n  for (const p of usedAPatterns) {\n    const m = clean.match(p);\n    if (m) {\n      usedAPrice = parsePrice(m[1]);\n      if (usedAPrice > 0) break;\n    }\n  }\n\n  // fallback: 価格一覧から最大値を拾う\n  if (unopenedPrice === 0 && usedAPrice === 0) {\n    const all = [...clean.matchAll(/([0-9]{1,3}(?:,[0-9]{3})+)\\s*円/g)]\n      .map(m => parseInt(m[1].replace(/,/g, ''), 10))\n      .filter(n => n > 0 && n < 10000000);\n    if (all.length > 0) {\n      usedAPrice = Math.max(...all);\n    }\n  }\n\n  const result = {\n    json: {\n      merge_id: mergeId || `iosys_${index}`,\n      jan: jan || 'UNKNOWN',\n      search_term: searchTerm || 'UNKNOWN',\n      iosys_unopened: unopenedPrice,\n      iosys_used_a: usedAPrice,\n      iosys_debug_has_html: html.length > 0,\n      iosys_debug_html_length: html.length\n    }\n  };\n  \n  // デバッグ情報を最初のアイテムに追加\n  if (index === 0) {\n    result.json._debug_iosys = {\n      inputCount: allInputs.length,\n      htmlLength: html.length,\n      mergeId: mergeId || null,\n      jan: jan || null,\n      searchTerm: searchTerm || null,\n      unopenedPrice: unopenedPrice,\n      usedAPrice: usedAPrice,\n      htmlPreview: html.substring(0, 500).replace(/\\n/g, ' ')\n    };\n  }\n  \n  return result;\n});"
+      },
+      "id": "parse-iosys",
+      "name": "📦 イオシス解析",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -205,34 +245,43 @@
     },
     {
       "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "loose"
-          },
-          "conditions": [
-            {
-              "id": "filter-has-diff",
-              "leftValue": "={{ $json.想定差益 }}",
-              "rightValue": 0,
-              "operator": {
-                "type": "number",
-                "operation": ">="
-              }
-            }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
+        "jsCode": "// モバイル一番 レスポンス解析 (Prod/1 スマホ買取ページ)\nconst allInputs = $input.all();\nconst html = (() => {\n  const raw = allInputs[0]?.json?.data || allInputs[0]?.json?.body || allInputs[0]?.json?.response || '';\n  return typeof raw === 'string' ? raw : '';\n})();\nconst parsePrice = (s) => { const m = (s||'').match(/([0-9,]+)/); return m ? parseInt(m[1].replace(/,/g,''),10) : 0; };\nconst products = [];\n\nif (html.length > 500) {\n  const regex = /(iPhone\\s+[\\d\\s]+(?:Pro\\s+Max|Pro|Plus|e)?\\s*\\d+GB\\s+simfree\\s*(未開封|開封)?)[\\s\\S]{0,200}?([0-9]{2,3},[0-9]{3})\\s*円/g;\n  let m;\n  while ((m = regex.exec(html)) !== null) {\n    const name = m[1].trim();\n    const price = parsePrice(m[3]);\n    if (price < 10000 || price > 500000) continue;\n    const hasUnopened = /未開封/.test(name);\n    const hasOpened = /開封/.test(name);\n    products.push({ name, unopened: hasUnopened ? price : 0, used: hasOpened ? price : 0 });\n  }\n}\n\nconst matchTerm = (name, term) => {\n  const n = (name||'').toLowerCase().replace(/\\s/g,'');\n  const t = (term||'').toString().toLowerCase().replace(/\\s/g,'');\n  if (!t || t.length < 2) return true;\n  return n.includes(t) || n.includes(t.replace(/[^a-z0-9]/g,''));\n};\n\nreturn allInputs.map((item, idx) => {\n  const input = item.json;\n  let mergeId = input.merge_id, searchTerm = input.search_term;\n  try {\n    const parents = $node[\"📦 楽天データ整形\"]?.all();\n    if (parents?.[idx]) {\n      mergeId = mergeId || parents[idx].json.merge_id;\n      searchTerm = searchTerm || parents[idx].json.search_term;\n    }\n  } catch(e){}\n  let unopened = 0, used = 0;\n  for (const p of products) {\n    if (!matchTerm(p.name, searchTerm)) continue;\n    if (p.unopened > unopened) unopened = p.unopened;\n    if (p.used > used) used = p.used;\n  }\n  if (unopened === 0 && used === 0 && products.length > 0) {\n    const fallback = products.find(p => matchTerm(p.name, 'iPhone'));\n    if (fallback) { unopened = fallback.unopened; used = fallback.used; }\n  }\n  return { json: { merge_id: mergeId || `mobile_${idx}`, mobile_ichiban_unopened: unopened, mobile_ichiban_used: used } };\n});"
       },
-      "id": "filter-results",
-      "name": "✅ 結果フィルタ",
-      "type": "n8n-nodes-base.filter",
+      "id": "parse-mobile-ichiban",
+      "name": "📦 モバイル一番解析",
+      "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
+        1100,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByKey",
+        "propertyNameMatches": "merge_id"
+      },
+      "id": "merge-results",
+      "name": "🔄 データ統合 (修正完了)",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
         1320,
-        100
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 最終利益計算ロジック（全件出力モード）\nconst items = $input.all();\nconst results = [];\nconst threshold = 1000;\n\nfor (const item of items) {\n  const rakuten = item.json;\n  \n  // 未使用・未開封価格を優先、なければ中古価格\n  const buyPrices = [\n    rakuten.janpara_unused,\n    rakuten.iosys_unopened,\n    rakuten.mobile_ichiban_unopened,\n    rakuten.janpara_used,\n    rakuten.iosys_used_a,\n    rakuten.mobile_ichiban_used\n  ].filter(p => p > 0 && typeof p === 'number');\n  \n  // 買取価格が見つかれば計算、なければ0\n  const maxBuyPrice = buyPrices.length > 0 ? Math.max(...buyPrices) : 0;\n  const profit = maxBuyPrice - rakuten.price;\n  \n  // 判定ロジック\n  let status = '判定不能';\n  if (maxBuyPrice === 0) {\n    status = '買取価格なし';\n  } else if (profit >= threshold) {\n    status = '利益あり';\n  } else {\n    status = '利益不足';\n  }\n\n  results.push({\n    json: {\n      比較日時: new Date().toISOString(),\n      商品名: rakuten.name,\n      JANコード: rakuten.jan,\n      ブランド: rakuten.brand || '-',\n      型番: rakuten.mpn || '-',\n      楽天価格: rakuten.price,\n      最高買取価格: maxBuyPrice,\n      差益: profit,\n      判定: status,\n      ジャンぱら未使用: rakuten.janpara_unused || 0,\n      イオシス未開封: rakuten.iosys_unopened || 0,\n      モバイル一番未開封: rakuten.mobile_ichiban_unopened || 0,\n      モバイル一番中古: rakuten.mobile_ichiban_used || 0,\n      楽天URL: rakuten.url\n    }\n  });\n}\n\n// 結果が空の場合のデバッグ出力\nif (results.length === 0) {\n    return [{ json: { message: '処理対象の商品がありませんでした', debug_items_merged: items.length } }];\n}\n\nreturn results;"
+      },
+      "id": "compare-logic",
+      "name": "📊 利益比較 (1000円位上)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        0
       ]
     },
     {
@@ -245,7 +294,7 @@
         },
         "sheetName": {
           "__rl": true,
-          "value": "価格比較結果",
+          "value": "JAN価格比較結果",
           "mode": "name"
         },
         "columns": {
@@ -259,8 +308,8 @@
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
       "position": [
-        1540,
-        100
+        1760,
+        0
       ]
     }
   ],
@@ -283,11 +332,6 @@
             "node": "🛒 楽天市場API",
             "type": "main",
             "index": 0
-          },
-          {
-            "node": "🕷️ Amazon ReCommerce取得",
-            "type": "main",
-            "index": 0
           }
         ]
       ]
@@ -307,36 +351,67 @@
       "main": [
         [
           {
+            "node": "🕷️ じゃんぱら取得",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "🕷️ イオシス取得",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "🔍 他サイト検索準備 (Brand/MPN)",
+            "type": "main",
+            "index": 0
+          },
+          {
             "node": "🔄 データ統合",
             "type": "main",
             "index": 0
-          }
-        ]
-      ]
-    },
-    "🕷️ Amazon ReCommerce取得": {
-      "main": [
-        [
+          },
           {
-            "node": "📄 HTML抽出",
+            "node": "🕷️ モバイル一番取得",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "📄 HTML抽出": {
+    "🕷️ じゃんぱら取得": {
       "main": [
         [
           {
-            "node": "📦 ReCommerceデータ整形",
+            "node": "📦 じゃんぱら解析",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "📦 ReCommerceデータ整形": {
+    "🕷️ イオシス取得": {
+      "main": [
+        [
+          {
+            "node": "📦 イオシス解析",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🕷️ モバイル一番取得": {
+      "main": [
+        [
+          {
+            "node": "📦 モバイル一番解析",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📦 じゃんぱら解析": {
       "main": [
         [
           {
@@ -347,29 +422,40 @@
         ]
       ]
     },
+    "📦 イオシス解析": {
+      "main": [
+        [
+          {
+            "node": "🔄 データ統合",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "📦 モバイル一番解析": {
+      "main": [
+        [
+          {
+            "node": "🔄 データ統合",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
     "🔄 データ統合": {
       "main": [
         [
           {
-            "node": "📊 価格比較 (差額2000円以上)",
+            "node": "📊 利益比較 (1000円位上)",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "📊 価格比較 (差額2000円以上)": {
-      "main": [
-        [
-          {
-            "node": "✅ 結果フィルタ",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "✅ 結果フィルタ": {
+    "📊 利益比較 (1000円位上)": {
       "main": [
         [
           {
@@ -387,6 +473,6 @@
   "staticData": null,
   "tags": [],
   "triggerCount": 0,
-  "updatedAt": "2026-01-25T00:00:00.000Z",
+  "updatedAt": "2026-01-26T00:00:00.000Z",
   "versionId": "1"
 }
