@@ -1,0 +1,106 @@
+{
+  "name": "モバイル一番 買取価格取得",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger",
+      "name": "実行",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "baseUrl",
+              "name": "baseUrl",
+              "value": "https://www.mobile-ichiban.com",
+              "type": "string"
+            },
+            {
+              "id": "categoryId",
+              "name": "categoryId",
+              "value": "1",
+              "type": "string"
+            },
+            {
+              "id": "maxPages",
+              "name": "maxPages",
+              "value": 5,
+              "type": "number"
+            }
+          ]
+        }
+      },
+      "id": "config",
+      "name": "設定",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const { baseUrl, categoryId, maxPages } = $input.first().json;\nconst pages = [];\nfor (let p = 1; p <= maxPages; p++) {\n  const url = p === 1 ? `${baseUrl}/Prod/${categoryId}` : `${baseUrl}/G01_ProdutShow/Index/${p}?kid=${categoryId}`;\n  pages.push({ json: { url, page: p } });\n}\nreturn pages;"
+      },
+      "id": "expand-pages",
+      "name": "ページ展開",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            },
+            {
+              "name": "Accept-Language",
+              "value": "ja,en-US;q=0.9"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "string"
+        }
+      },
+      "id": "http",
+      "name": "モバイル一番取得",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [860, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// モバイル一番 HTML 解析 (id=\"NewPrice_\" 構造)\nconst items = $input.all();\nconst results = [];\nconst seen = new Set();\n\nconst getHtml = (obj) => {\n  const toStr = (v) => { if (typeof v === 'string') return v; if (v && v.data) return toStr(v.data); if (Buffer.isBuffer && Buffer.isBuffer(v)) return v.toString('utf8'); return (v != null) ? String(v) : ''; };\n  if (typeof obj === 'string') return obj;\n  if (!obj || typeof obj !== 'object') return '';\n  for (const k of ['data','body','response','responseBody','text','html','content']) {\n    const s = toStr(obj[k]);\n    if (s && s.length > 1000 && (s.includes('<') || s.includes('NewPrice_'))) return s;\n  }\n  if (obj.$binary?.data?.data) { try { const b = Buffer.from(obj.$binary.data.data, 'base64'); return b.toString('utf8'); } catch(e){} }\n  for (const k of Object.keys(obj)) {\n    const s = toStr(obj[k]);\n    if (s && s.length > 1000 && (s.includes('<!DOCTYPE') || s.includes('NewPrice_'))) return s;\n  }\n  return '';\n};\n\nfor (const item of items) {\n  const html = getHtml(item.json);\n  if (!html || html.length < 1000) continue;\n  const page = item.json.page ?? 1;\n\n  const priceRe = /id=\"NewPrice_[^\"]+\">\\s*([0-9,]+)\\s*円/g;\n  let pm;\n  while ((pm = priceRe.exec(html)) !== null) {\n    const price = parseInt(pm[1].replace(/,/g,''), 10);\n    if (price < 1000 || price > 500000) continue;\n    const ctx = html.substring(Math.max(0, pm.index - 2500), pm.index + 100);\n    const titles = [...ctx.matchAll(/title=\"([^\"]+)\"/g)];\n    let name = '';\n    let condPart = '';\n    for (const t of titles) {\n      const v = t[1].trim();\n      if (v.length > 4 && v.length < 80) {\n        if (/iPhone|iPad|Pixel|OPPO|AQUOS|REDMI|simfree|未開封|開封|\\d+GB/i.test(v)) {\n          if (/simfree|未開封|開封/.test(v)) condPart = v;\n          else if (!name) name = v;\n        }\n      }\n    }\n    if (!name && condPart) name = condPart;\n    if (!name) name = ctx.match(/>\\s*([^<]{8,60})\\s*</)?.[1]?.trim() || `商品_${results.length}`;\n    if (condPart && !name.includes(condPart)) name = (name + ' ' + condPart).trim();\n\n    const hasUnopened = /未開封/.test(ctx);\n    const hasOpened = /開封/.test(ctx);\n    const cond = hasUnopened ? '新品・未開封' : (hasOpened ? '新品・開封済み' : '新品');\n\n    const imgM = ctx.match(/src=\"([^\"]*ProductImage[^\"]+\\.jpg)\"/);\n    const imageUrl = imgM ? (imgM[1].startsWith('http') ? imgM[1] : 'https://www.mobile-ichiban.com' + (imgM[1].startsWith('/')?'':'/') + imgM[1]) : null;\n    const janM = ctx.match(/JAN[:：]\\s*([0-9]{10,14})/i);\n    const noteM = ctx.match(/(橙-[0-9]+|△\\s*-?[0-9,]+円|保証開始減額|未開封のみ)/);\n\n    const key = `${name}_${cond}_${price}`;\n    if (seen.has(key)) continue;\n    seen.add(key);\n    results.push({ json: { 商品名: name, 買取金額: price, 状態: cond, 取得元: 'モバイル一番', URL: 'https://www.mobile-ichiban.com/', JAN: janM?janM[1]:null, 備考: noteM?noteM[1].trim():null, 画像URL: imageUrl, 取得ページ: page } });\n  }\n\n  const oldRe = /id=\"OldPrice_[^\"]+\">\\s*([0-9,]+)\\s*円/g;\n  let om;\n  while ((om = oldRe.exec(html)) !== null) {\n    const usedPrice = parseInt(om[1].replace(/,/g,''), 10);\n    if (usedPrice < 1000) continue;\n    const ctx = html.substring(Math.max(0, om.index - 2500), om.index + 50);\n    const titles = [...ctx.matchAll(/title=\"([^\"]+)\"/g)];\n    let name = '';\n    for (const t of titles) { const v = t[1]; if (v.length > 4 && /iPhone|iPad|\\d+GB/.test(v) && !/simfree|未開封|開封/.test(v)) { name = v; break; } }\n    if (!name) name = `商品_中古_${usedPrice}`;\n    const ukey = `${name}_中古_${usedPrice}`;\n    if (!seen.has(ukey)) { seen.add(ukey); results.push({ json: { 商品名: name, 買取金額: usedPrice, 状態: '中古', 取得元: 'モバイル一番', URL: 'https://www.mobile-ichiban.com/', JAN: null, 備考: null, 画像URL: null, 取得ページ: page } }); }\n  }\n}\n\nif (results.length > 0) return results;\nconst first = items[0]?.json;\nconst sample = typeof first === 'string' ? first.substring(0,500) : (first?.body ?? first?.data ?? first?.response ?? JSON.stringify(first).substring(0,500));\nreturn [{ json: { メッセージ: '取得した買取データがありません', 取得ページ数: items.length, _debug_keys: first && typeof first === 'object' ? Object.keys(first) : [], _debug_htmlLen: typeof sample === 'string' ? sample.length : 0, _debug_hasNewPrice: typeof sample === 'string' ? sample.includes('NewPrice_') : false } }];"
+      },
+      "id": "parse",
+      "name": "買取データ解析",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1080, 300]
+    }
+  ],
+  "connections": {
+    "実行": {
+      "main": [[{ "node": "設定", "type": "main", "index": 0 }]]
+    },
+    "設定": {
+      "main": [[{ "node": "ページ展開", "type": "main", "index": 0 }]]
+    },
+    "ページ展開": {
+      "main": [[{ "node": "モバイル一番取得", "type": "main", "index": 0 }]]
+    },
+    "モバイル一番取得": {
+      "main": [[{ "node": "買取データ解析", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {}
+}

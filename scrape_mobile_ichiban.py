@@ -102,9 +102,8 @@ async def scrape_mobile_ichiban(search_keyword: str = "iPhone 15") -> list:
                             return None
                         
                         new_price = parse_price(new_price_text)
-                        
-                        # 新品価格があり、かつ50000円以上の場合のみ抽出
-                        if new_price and new_price >= 50000:
+                        # 新品価格があり、かつ30000円以上の場合のみ抽出
+                        if new_price and new_price >= 30000:
                             products.append({
                                 'source': 'モバイル一番',
                                 'name': name,
@@ -139,10 +138,23 @@ import sys
 def log(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
-async def scrape_mobile_ichiban(search_keyword: str = "iPhone 15", json_mode: bool = False) -> list:
+async def scrape_mobile_ichiban(search_keyword: str = None, min_price: int = None, json_mode: bool = False) -> list:
     """
     モバイル一番から商品価格をスクレイピング
     """
+    # Load config if arguments not provided
+    if not search_keyword or min_price is None:
+        try:
+            with open('search_config.json', 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                if not search_keyword:
+                    search_keyword = config.get('keyword', 'iPhone 15')
+                if min_price is None:
+                    min_price = config.get('min_price', 30000)
+        except FileNotFoundError:
+            search_keyword = search_keyword or 'iPhone 15'
+            min_price = min_price if min_price is not None else 30000
+
     products = []
     
     # Customize logger based on mode
@@ -196,6 +208,23 @@ async def scrape_mobile_ichiban(search_keyword: str = "iPhone 15", json_mode: bo
                     cells = await row.query_selector_all('td')
                     if len(cells) >= 4:
                         name_cell = cells[1]
+                        
+                        # リンクの取得
+                        product_url = "https://www.mobile-ichiban.com/"
+                        try:
+                            link_element = await name_cell.query_selector('a')
+                            if link_element:
+                                href = await link_element.get_attribute('href')
+                                if href:
+                                    if href.startswith('http'):
+                                        product_url = href
+                                    else:
+                                        # 相対パスの解決
+                                        base_url = "https://www.mobile-ichiban.com"
+                                        product_url = f"{base_url}{href}" if href.startswith('/') else f"{base_url}/{href}"
+                        except Exception as e:
+                            log_msg(f"URL extraction error: {e}")
+
                         name = await name_cell.inner_text()
                         name = name.strip()
                         
@@ -218,20 +247,26 @@ async def scrape_mobile_ichiban(search_keyword: str = "iPhone 15", json_mode: bo
                         
                         new_price = parse_price(new_price_text)
                         
-                        if new_price and new_price >= 50000:
+                        # 新品価格があり、かつ30000円以上の場合のみ抽出
+                        if new_price and new_price >= 30000:
                             products.append({
                                 'source': 'モバイル一番',
                                 'name': name,
                                 'capacity': capacity,
                                 'price': new_price,
                                 'code': product_code,
-                                'url': 'https://www.mobile-ichiban.com/',
+                                'url': f"{product_url}#{product_code}" if product_code else product_url,
                                 'shop': 'モバイル一番',
                                 'condition': '新品・未開封'
                             })
+                        else:
+                            log_msg(f"  [SKIP] {name} | Price: {new_price} (Limit: {min_price})")
                             
                 except Exception as e:
                     log_msg(f"行の解析エラー: {e}")
+                    import traceback
+                    if not json_mode:
+                        traceback.print_exc()
                     continue
             
             log_msg(f"取得した商品数: {len(products)}")
@@ -260,7 +295,7 @@ async def main():
         print("モバイル一番 スクレイピング開始")
         print("=" * 50)
     
-    products = await scrape_mobile_ichiban(args.keyword, json_mode=args.json)
+    products = await scrape_mobile_ichiban(args.keyword if args.keyword != 'iPhone 15' else None, json_mode=args.json)
     
     if args.json:
         # Strict JSON output to stdout

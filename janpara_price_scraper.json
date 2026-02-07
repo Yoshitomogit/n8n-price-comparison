@@ -1,0 +1,210 @@
+{
+    "name": "Janpara Price Scraper",
+    "nodes": [
+        {
+            "parameters": {},
+            "id": "trigger-node",
+            "name": "When clicking \"Execute Workflow\"",
+            "type": "n8n-nodes-base.manualTrigger",
+            "typeVersion": 1,
+            "position": [
+                460,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "values": {
+                    "string": [
+                        {
+                            "name": "search_term",
+                            "value": "iPhone 15"
+                        },
+                        {
+                            "name": "category_code",
+                            "value": "78"
+                        }
+                    ]
+                }
+            },
+            "id": "set-term-node",
+            "name": "Set Search Term",
+            "type": "n8n-nodes-base.set",
+            "typeVersion": 2,
+            "position": [
+                680,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "jsCode": "const input = $input.first().json;\nconst maxPages = 4;\nconst results = [];\nfor (let page = 1; page <= maxPages; page++) {\n  results.push({\n    json: {\n      search_term: input.search_term,\n      category_code: input.category_code,\n      page: page\n    }\n  });\n}\nreturn results;"
+            },
+            "id": "expand-pages-node",
+            "name": "📄 ページ展開 (1〜4ページ)",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                790,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "url": "https://www.janpara.co.jp/sale/search/result/",
+                "sendQuery": true,
+                "queryParameters": {
+                    "parameters": [
+                        {
+                            "name": "KEYWORDS",
+                            "value": "={{ ($json.search_term || '').toString().replace(/\\s+/g, '') }}"
+                        },
+                        {
+                            "name": "CHKOUTCOM",
+                            "value": "1"
+                        },
+                        {
+                            "name": "OUTCLSCODE",
+                            "value": "={{ $json.category_code }}"
+                        },
+                        {
+                            "name": "ORDER",
+                            "value": "3"
+                        },
+                        {
+                            "name": "PAGE",
+                            "value": "={{ $json.page }}"
+                        }
+                    ]
+                },
+                "sendHeaders": true,
+                "headerParameters": {
+                    "parameters": [
+                        {
+                            "name": "User-Agent",
+                            "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                        },
+                        {
+                            "name": "Accept",
+                            "value": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                        },
+                        {
+                            "name": "Accept-Language",
+                            "value": "ja,en-US;q=0.9,en;q=0.8"
+                        },
+                        {
+                            "name": "Referer",
+                            "value": "https://www.janpara.co.jp/"
+                        }
+                    ]
+                },
+                "options": {
+                    "response": {
+                        "responseFormat": "string"
+                    }
+                }
+            },
+            "id": "http-request-node",
+            "name": "Janpara Search Request",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.1,
+            "position": [
+                900,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "mode": "combine",
+                "combineBy": "position",
+                "combinationMode": "mergeByPosition"
+            },
+            "id": "merge-node",
+            "name": "Merge (search_term + HTML)",
+            "type": "n8n-nodes-base.merge",
+            "typeVersion": 3,
+            "position": [
+                1010,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "jsCode": "const items = $input.all();\nconst results = [];\n\nfunction getHtml(obj) {\n  const toStr = (v) => { if (typeof v === 'string') return v; if (v && v.data) return toStr(v.data); if (Buffer.isBuffer && Buffer.isBuffer(v)) return v.toString('utf8'); return (v != null) ? String(v) : ''; };\n  if (typeof obj === 'string') return obj;\n  if (!obj || typeof obj !== 'object') return '';\n  const keys = ['data','body','response','responseBody','text','html','content','result'];\n  for (const k of keys) {\n    let v = obj[k];\n    const s = toStr(v);\n    if (s && s.length > 500) return s;\n    if (v && typeof v === 'object' && (v = v.body) != null) { const s2 = toStr(v); if (s2 && s2.length > 500) return s2; }\n  }\n  for (const k of Object.keys(obj)) {\n    const s = toStr(obj[k]);\n    if (s && s.length > 1000 && (s.includes('search_item') || s.includes('<html') || s.includes('<!DOCTYPE'))) return s;\n  }\n  return '';\n}\n\nfunction getFirstItemKeys(item) {\n  try { return Object.keys(item?.json || {}).join(','); } catch(e){ return ''; }\n}\n\nfunction normalizeKeywords(term) {\n  const s = (term || '').toString().trim();\n  const withSpace = s.toLowerCase().split(/\\s+/).filter(Boolean);\n  const noSpace = s.replace(/\\s+/g, '').toLowerCase();\n  return { withSpace, noSpace };\n}\n\nfunction matchesSearch(name, searchTerm) {\n  const n = (name || '').toLowerCase();\n  const nNorm = n.replace(/\\s+/g, '');\n  const term = (searchTerm || '').toString().trim();\n  if (!term) return true;\n  const tNorm = term.toLowerCase().replace(/\\s+/g, '');\n  if (nNorm.includes(tNorm)) return true;\n  const parts = term.toLowerCase().split(/\\s+/).filter(Boolean);\n  if (parts.length > 0 && parts.every(p => n.includes(p) || nNorm.includes(p.replace(/\\s/g, '')))) return true;\n  const firstWord = (tNorm.match(/^[a-z]+/) || [])[0] || tNorm.substring(0, 6);\n  if (firstWord && firstWord.length >= 4 && (n.includes(firstWord) || nNorm.includes(firstWord))) return true;\n  return false;\n}\n\nfor (const item of items) {\n  const html = getHtml(item.json);\n  if (!html || html.length < 500) {\n    const first = items[0];\n    results.push({ json: { _debug: 'HTML_EMPTY_OR_TOO_SHORT', _keys: Object.keys(item.json || {}), _htmlLen: (html || '').length, _inputCount: items.length, _sampleKeys: getFirstItemKeys(first), _hasSearchItem: (html||'').includes('search_item') } });\n    continue;\n  }\n  const clean = html.replace(/\\s+/g, ' ');\n  const itemBlocks = clean.split(/<div class=[\\\"']search_item_s(?:\\s+first)?/i);\n  let searchTerm = (item.json.search_term || '').toString().trim();\n  if (!searchTerm) searchTerm = item.json.KEYWORDS || '';\n  if (!searchTerm) { const m = html.match(/KEYWORDS=([^&]+)/); if (m) searchTerm = decodeURIComponent((m[1]||'').replace(/\\+/g, ' ')); }\n  searchTerm = (searchTerm || 'iPhone 15').toString().trim();\n\n  for (const block of itemBlocks) {\n    if (!block.includes('search_itemprice')) continue;\n    let priceMatch = block.match(/class=[\\\"']item_amount[\\\"'][^>]*>\\s*(?:&yen;|¥)?\\s*([0-9,]+)/);\n    if (!priceMatch && block.includes('search_itemprice')) priceMatch = block.match(/([0-9]{2,3},[0-9]{3})/);\n    const nameMatch = block.match(/class=[\\\"'](?:search_itemname\\s+wordturn|wordturn\\s+search_itemname)[\\\"'][^>]*>\\s*([^<]+?)\\s*<\\/div>/);\n    const linkMatch = block.match(/class=[\\\"']search_itemlink[\\\"'][^>]*href=[\\\"']([^\\\"']+)[\\\"']/);\n    const condMatch = block.match(/class=[\\\"']search_itemcondition[\\\"'][^>]*>\\s*([^<]+?)\\s*<\\/div>/);\n    const price = priceMatch ? parseInt(priceMatch[1].replace(/,/g, ''), 10) : 0;\n    const name = nameMatch ? nameMatch[1].replace(/&nbsp;/g, ' ').trim() : 'Unknown';\n    const link = linkMatch ? 'https://www.janpara.co.jp' + linkMatch[1] : '';\n    const condition = condMatch ? condMatch[1].trim() : 'Unknown';\n    if (price > 10000 && matchesSearch(name, searchTerm)) {\n      results.push({\n        json: {\n          search_term: searchTerm,\n          name: name,\n          price: price,\n          condition: condition,\n          link: link,\n          source: 'janpara'\n        }\n      });\n    }\n  }\n  if (results.length > 0 && results[0].json && !results[0].json._debug) {\n    results[0].json._debug_parse = { pagesProcessed: items.length, totalResults: results.length, lastPageBlocks: itemBlocks.length, htmlLength: html.length };\n  }\n}\n\nif (results.length === 0) {\n  let totalBlocks = 0;\n  let hadHtml = false;\n  let blocksWithPrice = 0;\n  let blocksWithAmount = 0;\n  let sampleSearchTerm = '';\n  let sampleBlock = '';\n  for (const item of items) {\n    const h = getHtml(item.json);\n    if (h && h.length > 500) {\n      hadHtml = true;\n      const b = h.split(/<div class=[\\\"']search_item_s(?:\\s+first)?/i);\n      totalBlocks += b.length;\n      const kw = h.match(/KEYWORDS=([^&]+)/);\n      if (kw) sampleSearchTerm = decodeURIComponent((kw[1]||'').replace(/\\+/g, ' '));\n      for (const blk of b) {\n        if (blk.includes('search_itemprice')) blocksWithPrice++;\n        if (blk.match(/class=[\\\"']item_amount[\\\"']/)) blocksWithAmount++;\n        if (blocksWithAmount === 1 && blk.length < 2000) sampleBlock = blk.substring(0, 800);\n      }\n    }\n  }\n  results.push({ json: { items_found: 0, _debug: 'NO_MATCHING_ITEMS', _hadHtml: hadHtml, _totalBlocksFound: totalBlocks, _blocksWithPrice: blocksWithPrice, _blocksWithItemAmount: blocksWithAmount, _sampleSearchTerm: sampleSearchTerm, _inputCount: items.length, _sampleBlockPreview: sampleBlock } });\n}\nreturn results;"
+            },
+            "id": "parser-node",
+            "name": "Parse Prices",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                1120,
+                300
+            ]
+        }
+    ],
+    "connections": {
+        "When clicking \"Execute Workflow\"": {
+            "main": [
+                [
+                    {
+                        "node": "Set Search Term",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Set Search Term": {
+            "main": [
+                [
+                    {
+                        "node": "📄 ページ展開 (1〜4ページ)",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "📄 ページ展開 (1〜4ページ)": {
+            "main": [
+                [
+                    {
+                        "node": "Janpara Search Request",
+                        "type": "main",
+                        "index": 0
+                    }
+                ],
+                [
+                    {
+                        "node": "Merge (search_term + HTML)",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Janpara Search Request": {
+            "main": [
+                [
+                    {
+                        "node": "Merge (search_term + HTML)",
+                        "type": "main",
+                        "index": 1
+                    }
+                ]
+            ]
+        },
+        "Merge (search_term + HTML)": {
+            "main": [
+                [
+                    {
+                        "node": "Parse Prices",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    },
+    "settings": {}
+}
